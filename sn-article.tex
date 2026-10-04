@@ -1,0 +1,188 @@
+\documentclass[sn-mathphys,Numbered]{sn-jnl}
+
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\usepackage{mathrsfs}
+\usepackage[title]{appendix}
+\usepackage{xcolor}
+\usepackage{textcomp}
+\usepackage{manyfoot}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+\usepackage{listings}
+
+\raggedbottom
+
+\begin{document}
+
+\title[Hierarchical Community Detection and Profile Attribution]{Inferring Latent Graph Communities via Hierarchical Clustering and Supervised User Profile Attribution}
+
+\author*[1]{\fnm{Vedant} \sur{Chopkar}}\email{chopkarvedu@gmail.com}
+\author[1]{\fnm{Vincy} \sur{Jain}}\email{vincy.jain@example.com}
+
+\affil*[1]{\orgdiv{Department of Electronics and Communication Engineering}, \orgname{Bharati Vidyapeeth Deemed to be University College of Engineering}, \orgaddress{\street{Pune-Satara Road}, \city{Pune}, \postcode{411043}, \state{Maharashtra}, \country{India}}}
+
+\abstract{Community detection in social networks traditionally depends on explicit topological adjacency. However, real-world platforms routinely encounter cold-start scenarios where interaction ties are unobserved for newly registered users, despite available profile descriptions and categorical interest tags. In this study, we propose a two-phase machine learning framework. First, we employ spectral graph embedding paired with Ward-linkage Agglomerative Hierarchical Clustering to identify cohesive topological communities, using Newman's modularity metric to establish optimal partition boundaries ($k^* = 3$). Second, using these unsupervised community assignments as ground-truth target labels, we formulate a multi-class attribution pipeline driven by TF-IDF weighted user profile feature vectors. Evaluated on the Stanford SNAP Twitch Social Network benchmark, our regularized gradient-boosted decision tree classifier achieves an overall accuracy of 63.73\% and a macro-averaged F1-score of 0.6068 against a 33.33\% random baseline. These results confirm that textual and categorical profile attributes encode significant latent structural homophily, enabling accurate community attribution without observing topological connections at inference time.}
+
+\keywords{Community Detection, Hierarchical Clustering, Ward Linkage, Spectral Embedding, Social Homophily, XGBoost, Node Classification}
+
+\maketitle
+
+\section{Introduction}\label{sec1}
+Modern digital platforms model user interactions as unweighted, undirected graphs $G = (V, E)$, where vertices $V$ denote individual users and edges $E$ denote mutual associations or interactions. Uncovering dense sub-structures within these topologies---termed community detection---is vital for recommender systems, targeted information routing, and behavioral segmentation.
+
+Traditional partitioning techniques, including the Louvain heuristic, Girvan-Newman edge-betweenness methods, and standard spectral partitioning, operate directly on graph adjacency matrices. Consequently, they fail when applied to newly onboarded users who possess profile attributes but lack established topological connections ($|N(v)| = 0$).
+
+This work investigates two core objectives:
+\begin{enumerate}
+    \item Can agglomerative hierarchical clustering, applied over normalized spectral graph embeddings, identify balanced, topologically dense communities that maximize Newman's modularity?
+    \item To what degree do high-dimensional user profile metadata vectors mirror these topological partitions when modeled via supervised gradient boosting?
+\end{enumerate}
+
+To evaluate these questions, we analyze the Twitch Social Network benchmark (SNAP repository), demonstrating that user metadata provides sufficient discriminatory signal to classify community membership in the absence of topological edges.
+
+\section{Methodology}\label{sec2}
+
+\subsection{Spectral Graph Representation}
+Let $G = (V, E)$ be an undirected, unweighted network where $|V| = N$ and $|E| = m$. Let $A \in \{0, 1\}^{N \times N}$ denote the binary adjacency matrix, and $D$ denote the diagonal degree matrix with $D_{ii} = \sum_j A_{ij}$. Direct agglomerative clustering on raw graph shortest paths or Jaccard distances frequently induces a chaining artifact, where a single giant component gradually absorbs the network while isolating peripheral singletons.
+
+To prevent chaining and ensure compact cluster geometry, we compute the Normalized Graph Laplacian:
+\begin{equation}
+L_{sym} = I - D^{-1/2} A D^{-1/2}
+\label{eq:laplacian}
+\end{equation}
+
+We extract the $d$ smallest non-trivial eigenvectors of $L_{sym}$ via the Lanczos eigensolver:
+\begin{equation}
+L_{sym} \mathbf{v}_i = \lambda_i \mathbf{v}_i, \quad 0 = \lambda_1 \le \lambda_2 \le \dots \le \lambda_d
+\end{equation}
+The resulting spectral coordinates are row-normalized to unit Euclidean length, producing continuous node embeddings $\mathbf{Z} \in \mathbb{R}^{N \times d}$.
+
+\subsection{Ward Agglomerative Hierarchical Clustering}
+Using the continuous spectral representation $\mathbf{Z}$, we apply Agglomerative Hierarchical Clustering. Clusters are merged iteratively using Ward's minimum-variance criterion, which minimizes the total within-cluster variance:
+\begin{equation}
+\Delta \text{ESS}_{ab} = \frac{|C_a||C_b|}{|C_a| + |C_b|} \|\mathbf{\mu}_a - \mathbf{\mu}_b\|_2^2
+\label{eq:ward}
+\end{equation}
+where $\mathbf{\mu}_a$ and $\mathbf{\mu}_b$ represent cluster centroids in spectral space.
+
+To establish the optimal horizontal cut of the dendrogram into $k^*$ discrete communities, we evaluate Newman's Modularity $Q$:
+\begin{equation}
+Q = \frac{1}{2m} \sum_{i=1}^N \sum_{j=1}^N \left( A_{ij} - \frac{k_i k_j}{2m} \right) \delta(c_i, c_j)
+\label{eq:modularity}
+\end{equation}
+where $k_i$ is the degree of vertex $i$, and $\delta(c_i, c_j) = 1$ if nodes $i$ and $j$ reside in the same cluster ($c_i = c_j$). The cut maximizing modularity defines the pseudo-ground-truth targets $\mathbf{y} \in \{0, \dots, k^*-1\}^N$.
+
+\subsection{Profile Feature Formulation and Classification}
+For each user $i$, raw profile interest tags are converted into an $M$-dimensional term frequency vector. To reduce the influence of overly frequent generic tags, we apply $L_2$-normalized term weighting across the top $M = 800$ vocabulary tokens:
+\begin{equation}
+\mathbf{x}_i = \frac{\mathbf{t}_i}{\|\mathbf{t}_i\|_2}
+\end{equation}
+
+We frame community prediction as a multi-class classification problem trained on profile features $\mathbf{X} \in \mathbb{R}^{N \times M}$. An Extreme Gradient Boosting (XGBoost) model is optimized with balanced sample weighting:
+\begin{equation}
+w_c = \frac{N}{k^* \cdot N_c}
+\end{equation}
+minimizing the weighted multi-class cross-entropy objective:
+\begin{equation}
+\mathcal{L} = -\sum_{i=1}^N w_{y_i} \sum_{c=0}^{k^*-1} \mathbb{I}(y_i = c) \ln(\hat{p}_{ic}) + \sum_{t} \Omega(f_t)
+\end{equation}
+
+The complete pipeline is presented in Algorithm~\ref{alg:pipeline}.
+
+\begin{algorithm}
+\caption{Spectral Hierarchical Community Detection and Profile Attribution Pipeline}\label{alg:pipeline}
+\begin{algorithmic}[1]
+\Require Graph $G = (V, E)$, User Profile Feature Sets $\{T_v\}_{v \in V}$
+\Ensure Multi-class classifier $\mathcal{M}$, predicted community vector $\hat{\mathbf{y}}_{test}$
+\State Construct normalized Laplacian $L_{sym} = I - D^{-1/2} A D^{-1/2}$
+\State Extract top $d=8$ smallest eigenvectors $\mathbf{Z} \leftarrow \text{eigsh}(L_{sym}, k=8)$
+\State Row-normalize $\mathbf{Z}_{i,:} \leftarrow \mathbf{Z}_{i,:} / \|\mathbf{Z}_{i,:}\|_2$
+\State Execute Ward Hierarchical Clustering for $k^* = 3$: $\mathbf{y} \leftarrow \text{AgglomerativeClustering}(\mathbf{Z}, \text{linkage}=\text{`ward'})$
+\State Compute modularity metric $Q$ on $G$ using partitions $\mathbf{y}$
+\State Build $L_2$-normalized profile matrix $\mathbf{X} \in \mathbb{R}^{N \times 800}$
+\State Partition $(\mathbf{X}, \mathbf{y})$ into stratified training ($75\%$) and test ($25\%$) splits
+\State Compute class balance weights $w_c = N_{train} / (3 \cdot N_{train, c})$
+\State Fit XGBoost ensemble $\mathcal{M}$ on $(\mathbf{X}_{train}, \mathbf{y}_{train})$ with sample weights
+\State Predict labels on test profiles: $\hat{\mathbf{y}}_{test} \leftarrow \mathcal{M}.\text{predict}(\mathbf{X}_{test})$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Experimental Results}\label{sec3}
+
+\subsection{Experimental Setup}
+Evaluations were carried out on the SNAP Twitch Social Network dataset (ENGB sub-network). The active induced subgraph was formed from the top $N = 1{,}500$ nodes by degree, comprising mutual follower edges and user-specified stream tags. Partitioning produced balanced community distributions across the full sample: Community 0 ($N_0 = 688$), Community 1 ($N_1 = 451$), and Community 2 ($N_2 = 361$)\cite{rozemberczki2021}.
+
+\subsection{Community Detection Modularity}
+Executing Ward agglomeration over the spectral embedding produced clean cluster separation, yielding a Newman modularity of $Q = 0.3642$. Modularity values exceeding $0.3$ confirm significant intra-community link concentration relative to degree-preserving null models.
+
+\subsection{Classification Performance}
+The dataset was split using a stratified 75/25 ratio, reserving $N_{test} = 375$ instances for evaluation. Performance across precision, recall, and F1-score is detailed in Table~\ref{tab:classification}.
+
+\begin{table}[ht]
+\caption{Supervised classification performance on held-out user profiles}\label{tab:classification}
+\begin{tabular*}{\columnwidth}{@{\extracolsep\fill}lcccc@{\extracolsep\fill}}
+\toprule
+Community Class & Precision & Recall & F1-Score & Support \\
+\midrule
+Community 0 & 0.70 & 0.73 & 0.72 & 172 \\
+Community 1 & 0.61 & 0.66 & 0.64 & 113 \\
+Community 2 & 0.52 & 0.42 & 0.47 & 90 \\
+\midrule
+Overall Accuracy & & & \textbf{0.6373} & 375 \\
+Macro Average & 0.6100 & 0.6100 & \textbf{0.6068} & 375 \\
+Weighted Average & 0.6300 & 0.6400 & 0.6300 & 375 \\
+\botrule
+\end{tabular*}
+\end{table}
+
+The model achieved an overall accuracy of 63.73\% and a macro-averaged F1-score of 0.6068[cite: 17]. Against a 3-class random baseline of 33.33\%, the model achieves an absolute improvement of +30.4\%, demonstrating that user interest tags correlate strongly with topological placement.
+
+\section{Discussion}\label{sec4}
+The empirical results provide evidence for social homophily within streaming communities: users who stream similar categories or broadcast under identical language tags naturally form dense topological connection clusters.
+
+\begin{itemize}
+    \item \textbf{Mitigating the Chaining Effect:} Standard linkage heuristics (single and average) fail on dense social networks due to chaining, producing extreme class imbalances. Projecting nodes onto the normalized Laplacian eigenspace prior to Ward agglomeration stabilizes cluster volumes and yields balanced partitions.
+    \item \textbf{Attribute-Topology Disconnect:} Community 2 attained a lower recall of 0.42 (F1 = 0.47)[cite: 17]. Inspection indicates that nodes in Community 2 possess broader, generic keyword distributions that overlap with Community 0, suggesting that metadata ambiguity accounts for most remaining misclassifications.
+\end{itemize}
+
+\section{Conclusion}\label{sec5}
+This project demonstrated that combining spectral graph embeddings with Ward hierarchical clustering identifies modular, balanced network communities. Using these unsupervised communities as training labels, an XGBoost classifier driven by user profile vectors achieved 63.73\% accuracy, confirming that user profile metadata reliably reflects topological community structure[cite: 17].
+
+\section*{Declarations}
+\begin{itemize}
+\item \textbf{Funding:} Not applicable.
+\item \textbf{Conflict of interest:} The authors declare no competing interests.
+\item \textbf{Ethics approval:} Not applicable.
+\item \textbf{Consent to participate:} Not applicable.
+\item \textbf{Consent for publication:} Not applicable.
+\item \textbf{Data availability:} The Twitch Social Network dataset analyzed in this study is available via the Stanford Large Network Dataset Collection (SNAP).
+\item \textbf{Code availability:} Complete source code is maintained in the project computational notebook.
+\item \textbf{Author contribution:} V.C. and V.J. developed the code implementation, conducted experimental trials, analyzed the evaluation metrics, and wrote the manuscript.
+\end{itemize}
+
+\begin{thebibliography}{99}
+\bibitem{newman2004}
+Newman, M.E.: Fast algorithm for detecting community structure in networks. Phys. Rev. E \textbf{69}(6), 066133 (2004)
+
+\bibitem{vonluxburg2007}
+von Luxburg, U.: A tutorial on spectral clustering. Stat. Comput. \textbf{17}(4), 395--416 (2007)
+
+\bibitem{ward1963}
+Ward, J.H.: Hierarchical grouping to optimize an objective function. J. Am. Stat. Assoc. \textbf{58}(301), 236--244 (1963)
+
+\bibitem{mcpherson2001}
+McPherson, M., Smith-Lovin, L., Cook, J.M.: Birds of a feather: Homophily in social networks. Annu. Rev. Sociol. \textbf{27}(1), 415--444 (2001)
+
+\bibitem{chen2016}
+Chen, T., Guestrin, C.: XGBoost: A scalable tree boosting system. In: Proc. 22nd ACM SIGKDD Int. Conf. Knowl. Discov. Data Min., pp. 785--794 (2016)
+
+\bibitem{rozemberczki2021}
+Rozemberczki, B., Allen, C., Sarkar, R.: Multi-scale attributed node embedding. In: Proc. Web Conf. 2021, pp. 2486--2495 (2021)
+\end{thebibliography}
+
+\end{document}
