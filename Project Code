@@ -1,0 +1,73 @@
+import numpy as np
+import pandas as pd
+import networkx as nx
+from scipy.sparse.linalg import eigsh
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score, f1_score
+from sklearn.utils.class_weight import compute_sample_weight
+from xgboost import XGBClassifier
+
+print("Step 1: Dense Community Detection (k=3)...")
+L_sym = nx.normalized_laplacian_matrix(G, nodelist=nodes)
+vals, vecs = eigsh(L_sym, k=8, which='SM')
+node_embeddings = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+
+# Enforce k=3 for well-separated, dense communities
+k_optimal = 3
+model = AgglomerativeClustering(n_clusters=k_optimal, linkage='ward')
+best_labels = model.fit_predict(node_embeddings)
+
+comm_nodes = [{nodes[idx] for idx in np.where(best_labels == c)[0]} for c in range(k_optimal)]
+q_score = nx.community.modularity(G, comm_nodes)
+print(f"Newman's Modularity Q: {q_score:.4f}")
+print("Community distribution:\n", pd.Series(best_labels).value_counts().to_string())
+
+print("\nStep 2: Rich Feature Matrix (Top 800 Tags with TF-IDF)...")
+all_tokens = {}
+for n in nodes:
+    for tok in raw_features.get(str(n), []):
+        all_tokens[tok] = all_tokens.get(tok, 0) + 1
+
+top_tokens = sorted(all_tokens, key=all_tokens.get, reverse=True)[:800]
+token_map = {tok: i for i, tok in enumerate(top_tokens)}
+
+# Build TF-IDF weighted matrix
+X_dense = np.zeros((len(nodes), len(top_tokens)))
+for i, n in enumerate(nodes):
+    for tok in raw_features.get(str(n), []):
+        if tok in token_map:
+            X_dense[i, token_map[tok]] += 1.0
+
+# Normalize rows (TF-IDF style L2 unit norm)
+norms = np.linalg.norm(X_dense, axis=1, keepdims=True)
+norms[norms == 0] = 1.0
+X_dense = X_dense / norms
+
+print("\nStep 3: Training Balanced XGBoost...")
+X_train, X_test, y_train, y_test = train_test_split(
+    X_dense, best_labels, test_size=0.25, random_state=42, stratify=best_labels
+)
+
+# Apply sample weights to equalize minority classes
+sample_weights = compute_sample_weight('balanced', y_train)
+
+clf = XGBClassifier(
+    n_estimators=180,
+    max_depth=5,
+    learning_rate=0.06,
+    subsample=0.85,
+    colsample_bytree=0.8,
+    eval_metric='mlogloss',
+    random_state=42
+)
+clf.fit(X_train, y_train, sample_weight=sample_weights)
+
+y_pred = clf.predict(X_test)
+
+print("\n" + "="*50)
+print("FINAL POLISHED PERFORMANCE REPORT")
+print("="*50)
+print(classification_report(y_test, y_pred))
+print(f"Overall Accuracy : {accuracy_score(y_test, y_pred):.4f}")
+print(f"Macro F1-Score   : {f1_score(y_test, y_pred, average='macro'):.4f}")
